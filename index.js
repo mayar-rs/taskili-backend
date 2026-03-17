@@ -28,17 +28,40 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// Work Schema for Projects (Updated with Category and Image)
-const WorkSchema = new mongoose.Schema({
-    title: { type: String, required: true },
-    description: { type: String, required: true },
-    category: { type: String, default: 'General' }, 
-    imageUrl: { type: String, default: 'https://via.placeholder.com/150' },
-    status: { type: String, default: 'Pending' }, 
-    highestBid: { type: String, default: '0 DA' },
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+// Work Schema for Projects 
+const workSchema = new mongoose.Schema({
+  title: {
+    type: String,
+    required: true
+  },
+  description: {
+    type: String,
+    required: true
+  },
+  category: {
+    type: String, // e.g., 'Health Care', 'Education', 'House'
+    required: true
+  },
+  price: {
+    type: Number, // Displayed as DA in the frontend (e.g., 3000)
+    required: true
+  },
+  location: {
+    type: String, // Matches the city/commune in design (e.g., 'Alger, Hydra')
+    required: true
+  },
+  owner: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', // Reference to the user who posted the task
+    required: true 
+  },
+  createdAt: { 
+    type: Date, 
+    default: Date.now // Automatically sets the posting date
+  }
 });
-const Work = mongoose.model('Work', WorkSchema);
+
+const Work = mongoose.model('Work', workSchema);
 
 // --- 4. Security Middleware (JWT Verification) ---
 const verifyToken = (req, res, next) => {
@@ -132,25 +155,24 @@ app.get('/api/works/:id', async (req, res) => {
     }
 });
 
-// PROJECTS: Create a new project (Protected)
+// PROJECTS: Create a new task (Protected)
 app.post('/api/works', verifyToken, async (req, res) => {
     try {
-        const { title, description, category, imageUrl, highestBid } = req.body;
-        if (!title || !description) {
-            return res.status(400).json({ error: "Title and Description are required!" });
-        }
+        const { title, description, category, price, location } = req.body;
+
         const newWork = new Work({
             title,
             description,
-            category: category || 'General',
-            imageUrl: imageUrl || 'https://via.placeholder.com/150',
-            highestBid: highestBid || '0 DA',
-            createdBy: req.user.id 
+            category,
+            price, 
+            location, 
+            owner: req.user.id // Taken from the verified JWT token
         });
+
         const savedWork = await newWork.save();
         res.status(201).json(savedWork);
     } catch (err) {
-        res.status(500).json({ error: "Failed to create project" });
+        res.status(500).json({ message: "Error creating task", error: err.message });
     }
 });
 
