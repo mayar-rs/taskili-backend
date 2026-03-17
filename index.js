@@ -31,27 +31,39 @@ const upload = multer({ storage: storage });
 
 // --- 4. Database Models ---
 
-// User Schema
+// User Schema (Updated with Roles as per Figma "Join us as" screen)
 const UserSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
+    role: { type: String, enum: ['freelancer', 'employer'], default: 'freelancer' },
     createdAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', UserSchema);
 
-// Work Schema 
+// Work Schema (Updated to match Figma filtering fields)
 const workSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, required: true },
-    category: { type: String, required: true },
+    category: { type: String, required: true }, // e.g., 'Graphic Design', 'Medical Assistance'
     price: { type: Number, required: true },
-    location: { type: String, required: true },
+    location: { type: String, required: true }, // e.g., 'Alger', 'Medea'
     imageUrl: { type: String }, 
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     createdAt: { type: Date, default: Date.now }
 });
 const Work = mongoose.model('Work', workSchema);
+
+// Bid Schema (New: To allow Freelancers to "Apply Now")
+const BidSchema = new mongoose.Schema({
+    workId: { type: mongoose.Schema.Types.ObjectId, ref: 'Work', required: true },
+    freelancerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    bidAmount: { type: Number, required: true },
+    message: { type: String, required: true },
+    status: { type: String, enum: ['pending', 'accepted', 'rejected'], default: 'pending' },
+    createdAt: { type: Date, default: Date.now }
+});
+const Bid = mongoose.model('Bid', BidSchema);
 
 // --- 5. Security Middleware ---
 const verifyToken = (req, res, next) => {
@@ -73,13 +85,19 @@ const verifyToken = (req, res, next) => {
  */
 app.post('/api/register', async (req, res) => {
     try {
+        const { fullName, email, password, role } = req.body;
+        
+        // Hash password
         const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(req.body.password, salt);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        
         const newUser = new User({ 
-            fullName: req.body.fullName, 
-            email: req.body.email, 
-            password: hashedPassword 
+            fullName, 
+            email, 
+            password: hashedPassword,
+            role: role || 'freelancer' // Default to freelancer if role not provided
         });
+        
         await newUser.save();
         res.status(201).json({ message: "User registered successfully!" });
     } catch (err) { 
@@ -93,20 +111,54 @@ app.post('/api/login', async (req, res) => {
         if (!user || !(await bcrypt.compare(req.body.password, user.password))) 
             return res.status(400).json({ error: "Invalid email or password" });
             
-        const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '2h' });
-        res.json({ token, user: { id: user._id, fullName: user.fullName } });
+        const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '2h' });
+        res.json({ 
+            token, 
+            user: { id: user._id, fullName: user.fullName, role: user.role } 
+        });
     } catch (err) { 
         res.status(500).json({ error: "Login process failed" }); 
     }
 });
 
-/** * WORKS/PROJECTS ROUTES
+/** * WORKS/PROJECTS ROUTES (Updated with Advanced Filtering)
  */
 
-// @route   POST /api/works
-// @desc    Create a new work post with an image
+// @route   GET /api/works
+// @desc    Get all works with filters (Matches Figma Sidebar & Search Bar)
+app.get('/api/works', async (req, res) => {
+    try {
+        const { category, city, minPrice, maxPrice, search } = req.query;
+        let filter = {};
+
+        if (category) filter.category = category;
+        if (city) filter.location = { $regex: city, $options: 'i' };
+        if (minPrice || maxPrice) {
+            filter.price = {};
+            if (minPrice) filter.price.$gte = Number(minPrice);
+            if (maxPrice) filter.price.$lte = Number(maxPrice);
+        }
+        if (search) {
+            filter.$or = [
+                { title: { $regex: search, $options: 'i' } },
+                { description: { $regex: search, $options: 'i' } }
+            ];
+        }
+
+        const works = await Work.find(filter).populate('owner', 'fullName email').sort({ createdAt: -1 });
+        res.status(200).json(works); 
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch works" });
+    }
+});
+
 app.post('/api/works', verifyToken, upload.single('image'), async (req, res) => {
     try {
+        // Only Employers should post projects according to Figma logic
+        if (req.user.role !== 'employer') {
+            return res.status(403).json({ error: "Only employers can post projects" });
+        }
+
         const { title, description, category, price, location } = req.body;
         const newWork = new Work({
             title, description, category, price, location,
@@ -120,63 +172,42 @@ app.post('/api/works', verifyToken, upload.single('image'), async (req, res) => 
     }
 });
 
-// @route   GET /api/works
-// @desc    Get all works with owner details
-app.get('/api/works', async (req, res) => {
+/** * BIDDING SYSTEM ROUTES (New: For Figma "Apply Now" button)
+ */
+
+// @route   POST /api/bids
+// @desc    Freelancer applies for a project
+app.post('/api/bids', verifyToken, async (req, res) => {
     try {
-        const works = await Work.find().populate('owner', 'fullName email');
-        res.status(200).json(works); 
-    } catch (error) {
-        res.status(500).json({ error: "Failed to fetch works" });
-    }
-});
-
-// @route   PUT /api/works/:id
-// @desc    Update a specific work (Only by owner)
-app.put('/api/works/:id', verifyToken, async (req, res) => {
-    try {
-        const work = await Work.findById(req.params.id);
-        
-        if (!work) return res.status(404).json({ error: "Work not found" });
-
-        // Check ownership
-        if (work.owner.toString() !== req.user.id) 
-            return res.status(403).json({ error: "Unauthorized: You can only update your own work" });
-
-        const updatedWork = await Work.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        res.status(200).json(updatedWork);
-    } catch (err) { 
-        res.status(500).json({ error: "Update operation failed" }); 
-    }
-});
-
-// @route   DELETE /api/works/:id
-// @desc    Delete a specific work (Only by owner)
-app.delete('/api/works/:id', verifyToken, async (req, res) => {
-    try {
-        const work = await Work.findById(req.params.id);
-        
-        if (!work) return res.status(404).json({ error: "Work not found" });
-
-        // Authorization check: Owner only
-        if (work.owner.toString() !== req.user.id) {
-            return res.status(403).json({ error: "Unauthorized: You cannot delete this work" });
+        if (req.user.role !== 'freelancer') {
+            return res.status(403).json({ error: "Only freelancers can apply for work" });
         }
 
-        await Work.findByIdAndDelete(req.params.id);
-        res.status(200).json({ message: "Work deleted successfully" });
-    } catch (err) { 
-        res.status(500).json({ error: "Delete operation failed" }); 
+        const { workId, bidAmount, message } = req.body;
+        const newBid = new Bid({
+            workId,
+            freelancerId: req.user.id,
+            bidAmount,
+            message
+        });
+
+        await newBid.save();
+        res.status(201).json({ message: "Application sent successfully!" });
+    } catch (err) {
+        res.status(500).json({ error: "Failed to send bid" });
     }
 });
 
-/** * DASHBOARD ROUTES
+/** * STATS ROUTE (Updated for Figma "500+ Freelancers" display)
  */
-app.get('/api/stats', verifyToken, async (req, res) => {
+app.get('/api/stats', async (req, res) => {
     try {
-        const myCount = await Work.countDocuments({ owner: req.user.id });
-        const totalCount = await Work.countDocuments();
-        res.json({ myProjects: myCount, totalMarket: totalCount });
+        const freelancerCount = await User.countDocuments({ role: 'freelancer' });
+        const totalWorks = await Work.countDocuments();
+        res.json({ 
+            freelancers: freelancerCount, 
+            worksPosted: totalWorks 
+        });
     } catch (err) { 
         res.status(500).json({ error: "Failed to fetch stats" }); 
     }
