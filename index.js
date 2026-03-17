@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const multer = require('multer'); // Added for image uploads
+const multer = require('multer');
 const path = require('path');
 
 const app = express();
@@ -29,7 +29,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// --- 4. Database Schemas ---
+// --- 4. Database Models ---
 
 // User Schema
 const UserSchema = new mongoose.Schema({
@@ -40,23 +40,23 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// Work Schema (Updated with ImageUrl)
+// Work Schema 
 const workSchema = new mongoose.Schema({
-  title: { type: String, required: true },
-  description: { type: String, required: true },
-  category: { type: String, required: true },
-  price: { type: Number, required: true },
-  location: { type: String, required: true },
-  imageUrl: { type: String }, // Path to the uploaded image
-  owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  createdAt: { type: Date, default: Date.now }
+    title: { type: String, required: true },
+    description: { type: String, required: true },
+    category: { type: String, required: true },
+    price: { type: Number, required: true },
+    location: { type: String, required: true },
+    imageUrl: { type: String }, 
+    owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    createdAt: { type: Date, default: Date.now }
 });
 const Work = mongoose.model('Work', workSchema);
 
 // --- 5. Security Middleware ---
 const verifyToken = (req, res, next) => {
     const token = req.header('auth-token');
-    if (!token) return res.status(401).json({ error: "Access Denied!" });
+    if (!token) return res.status(401).json({ error: "Access Denied! No token provided." });
 
     try {
         const verified = jwt.verify(token, JWT_SECRET);
@@ -69,28 +69,42 @@ const verifyToken = (req, res, next) => {
 
 // --- 6. API Routes ---
 
-// AUTH: Register & Login
+/** * AUTHENTICATION ROUTES
+ */
 app.post('/api/register', async (req, res) => {
     try {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(req.body.password, salt);
-        const newUser = new User({ fullName: req.body.fullName, email: req.body.email, password: hashedPassword });
+        const newUser = new User({ 
+            fullName: req.body.fullName, 
+            email: req.body.email, 
+            password: hashedPassword 
+        });
         await newUser.save();
-        res.status(201).json({ message: "User registered!" });
-    } catch (err) { res.status(500).json({ error: "Registration failed" }); }
+        res.status(201).json({ message: "User registered successfully!" });
+    } catch (err) { 
+        res.status(500).json({ error: "Registration failed: Email might already exist" }); 
+    }
 });
 
 app.post('/api/login', async (req, res) => {
     try {
         const user = await User.findOne({ email: req.body.email });
         if (!user || !(await bcrypt.compare(req.body.password, user.password))) 
-            return res.status(400).json({ error: "Invalid Credentials" });
+            return res.status(400).json({ error: "Invalid email or password" });
+            
         const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '2h' });
         res.json({ token, user: { id: user._id, fullName: user.fullName } });
-    } catch (err) { res.status(500).json({ error: "Login failed" }); }
+    } catch (err) { 
+        res.status(500).json({ error: "Login process failed" }); 
+    }
 });
 
-// PROJECTS: Create (With Image Upload Support)
+/** * WORKS/PROJECTS ROUTES
+ */
+
+// @route   POST /api/works
+// @desc    Create a new work post with an image
 app.post('/api/works', verifyToken, upload.single('image'), async (req, res) => {
     try {
         const { title, description, category, price, location } = req.body;
@@ -101,48 +115,71 @@ app.post('/api/works', verifyToken, upload.single('image'), async (req, res) => 
         });
         const savedWork = await newWork.save();
         res.status(201).json(savedWork);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { 
+        res.status(500).json({ error: err.message }); 
+    }
 });
 
-// PROJECTS: Get All
+// @route   GET /api/works
+// @desc    Get all works with owner details
 app.get('/api/works', async (req, res) => {
     try {
-        const works = await Work.find().populate('owner', 'fullName');
-        res.json(works);
-    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+        const works = await Work.find().populate('owner', 'fullName email');
+        res.status(200).json(works); 
+    } catch (error) {
+        res.status(500).json({ error: "Failed to fetch works" });
+    }
 });
 
-// PROJECTS: Update
+// @route   PUT /api/works/:id
+// @desc    Update a specific work (Only by owner)
 app.put('/api/works/:id', verifyToken, async (req, res) => {
     try {
-        const project = await Work.findById(req.params.id);
-        if (!project || project.owner.toString() !== req.user.id) 
-            return res.status(403).json({ error: "Unauthorized" });
+        const work = await Work.findById(req.params.id);
+        
+        if (!work) return res.status(404).json({ error: "Work not found" });
 
-        const updated = await Work.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        res.json(updated);
-    } catch (err) { res.status(500).json({ error: "Update failed" }); }
+        // Check ownership
+        if (work.owner.toString() !== req.user.id) 
+            return res.status(403).json({ error: "Unauthorized: You can only update your own work" });
+
+        const updatedWork = await Work.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        res.status(200).json(updatedWork);
+    } catch (err) { 
+        res.status(500).json({ error: "Update operation failed" }); 
+    }
 });
 
-// PROJECTS: Delete
+// @route   DELETE /api/works/:id
+// @desc    Delete a specific work (Only by owner)
 app.delete('/api/works/:id', verifyToken, async (req, res) => {
     try {
-        const project = await Work.findById(req.params.id);
-        if (!project || project.owner.toString() !== req.user.id) 
-            return res.status(403).json({ error: "Unauthorized" });
+        const work = await Work.findById(req.params.id);
+        
+        if (!work) return res.status(404).json({ error: "Work not found" });
+
+        // Authorization check: Owner only
+        if (work.owner.toString() !== req.user.id) {
+            return res.status(403).json({ error: "Unauthorized: You cannot delete this work" });
+        }
 
         await Work.findByIdAndDelete(req.params.id);
-        res.json({ message: "Deleted" });
-    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+        res.status(200).json({ message: "Work deleted successfully" });
+    } catch (err) { 
+        res.status(500).json({ error: "Delete operation failed" }); 
+    }
 });
 
-// DASHBOARD: Stats
+/** * DASHBOARD ROUTES
+ */
 app.get('/api/stats', verifyToken, async (req, res) => {
     try {
         const myCount = await Work.countDocuments({ owner: req.user.id });
         const totalCount = await Work.countDocuments();
         res.json({ myProjects: myCount, totalMarket: totalCount });
-    } catch (err) { res.status(500).json({ error: "Stats failed" }); }
+    } catch (err) { 
+        res.status(500).json({ error: "Failed to fetch stats" }); 
+    }
 });
 
 // --- 7. Start Server ---
