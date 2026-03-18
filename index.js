@@ -96,15 +96,37 @@ const validateWorkInput = (req, res, next) => {
  */
 app.post('/api/register', async (req, res) => {
     try {
-        const { fullName, email, password, role } = req.body;
+        const { fullName, email, password, confirmPassword, role } = req.body;
+        
+        // 1. Check if password and confirmPassword match
+        if (password !== confirmPassword) {
+            return res.status(400).json({ error: "Passwords do not match!" });
+        }
+
+        // 2. Check password length for security
+        if (password.length < 6) {
+            return res.status(400).json({ error: "Password must be at least 6 characters" });
+        }
+
+        // Check if user already exists
+        const userExists = await User.findOne({ email });
+        if (userExists) return res.status(400).json({ error: "Email already registered" });
+
+        // Hash password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
-        const newUser = new User({ fullName, email, password: hashedPassword, role });
+        const newUser = new User({ 
+            fullName, 
+            email, 
+            password: hashedPassword, 
+            role: role || 'freelancer' 
+        });
+        
         await newUser.save();
         res.status(201).json({ message: "User registered successfully!" });
     } catch (err) { 
-        res.status(500).json({ error: "Registration failed: Email exists" }); 
+        res.status(500).json({ error: "Registration failed" }); 
     }
 });
 
