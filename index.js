@@ -13,7 +13,7 @@ const JWT_SECRET = 'MY_SECRET_KEY_2026';
 // --- 1. Middlewares ---
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static('uploads')); // Serve uploaded images publicly
+app.use('/uploads', express.static('uploads')); 
 
 // --- 2. Database Connection ---
 mongoose.connect('mongodb://localhost:27017/taskili_db')
@@ -31,7 +31,7 @@ const upload = multer({ storage: storage });
 
 // --- 4. Database Models ---
 
-// User Schema (Updated with Roles as per Figma "Join us as" screen)
+// User Model
 const UserSchema = new mongoose.Schema({
     fullName: { type: String, required: true },
     email: { type: String, required: true, unique: true },
@@ -41,20 +41,20 @@ const UserSchema = new mongoose.Schema({
 });
 const User = mongoose.model('User', UserSchema);
 
-// Work Schema (Updated to match Figma filtering fields)
+// Work/Project Model
 const workSchema = new mongoose.Schema({
     title: { type: String, required: true },
     description: { type: String, required: true },
-    category: { type: String, required: true }, // e.g., 'Graphic Design', 'Medical Assistance'
+    category: { type: String, required: true }, 
     price: { type: Number, required: true },
-    location: { type: String, required: true }, // e.g., 'Alger', 'Medea'
+    location: { type: String, required: true }, 
     imageUrl: { type: String }, 
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     createdAt: { type: Date, default: Date.now }
 });
 const Work = mongoose.model('Work', workSchema);
 
-// Bid Schema (New: To allow Freelancers to "Apply Now")
+// Bidding Model
 const BidSchema = new mongoose.Schema({
     workId: { type: mongoose.Schema.Types.ObjectId, ref: 'Work', required: true },
     freelancerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -65,7 +65,9 @@ const BidSchema = new mongoose.Schema({
 });
 const Bid = mongoose.model('Bid', BidSchema);
 
-// --- 5. Security Middleware ---
+// --- 5. Security & Validation Middlewares ---
+
+// Authentication Guard
 const verifyToken = (req, res, next) => {
     const token = req.header('auth-token');
     if (!token) return res.status(401).json({ error: "Access Denied! No token provided." });
@@ -79,29 +81,30 @@ const verifyToken = (req, res, next) => {
     }
 };
 
+// Input Validation for Posts
+const validateWorkInput = (req, res, next) => {
+    const { title, price, category, location } = req.body;
+    if (!title || title.length < 5) return res.status(400).json({ error: "Title is too short" });
+    if (!price || price <= 0) return res.status(400).json({ error: "Valid price is required" });
+    if (!category || !location) return res.status(400).json({ error: "Category and Location are required" });
+    next();
+};
+
 // --- 6. API Routes ---
 
-/** * AUTHENTICATION ROUTES
+/** * AUTHENTICATION 
  */
 app.post('/api/register', async (req, res) => {
     try {
         const { fullName, email, password, role } = req.body;
-        
-        // Hash password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
         
-        const newUser = new User({ 
-            fullName, 
-            email, 
-            password: hashedPassword,
-            role: role || 'freelancer' // Default to freelancer if role not provided
-        });
-        
+        const newUser = new User({ fullName, email, password: hashedPassword, role });
         await newUser.save();
         res.status(201).json({ message: "User registered successfully!" });
     } catch (err) { 
-        res.status(500).json({ error: "Registration failed: Email might already exist" }); 
+        res.status(500).json({ error: "Registration failed: Email exists" }); 
     }
 });
 
@@ -109,23 +112,17 @@ app.post('/api/login', async (req, res) => {
     try {
         const user = await User.findOne({ email: req.body.email });
         if (!user || !(await bcrypt.compare(req.body.password, user.password))) 
-            return res.status(400).json({ error: "Invalid email or password" });
+            return res.status(400).json({ error: "Invalid credentials" });
             
         const token = jwt.sign({ id: user._id, role: user.role }, JWT_SECRET, { expiresIn: '2h' });
-        res.json({ 
-            token, 
-            user: { id: user._id, fullName: user.fullName, role: user.role } 
-        });
+        res.json({ token, user: { id: user._id, fullName: user.fullName, role: user.role } });
     } catch (err) { 
-        res.status(500).json({ error: "Login process failed" }); 
+        res.status(500).json({ error: "Login failed" }); 
     }
 });
 
-/** * WORKS/PROJECTS ROUTES (Updated with Advanced Filtering)
+/** * WORKS & FILTERING (Matches Figma Search/Filter Sidebar)
  */
-
-// @route   GET /api/works
-// @desc    Get all works with filters (Matches Figma Sidebar & Search Bar)
 app.get('/api/works', async (req, res) => {
     try {
         const { category, city, minPrice, maxPrice, search } = req.query;
@@ -146,72 +143,91 @@ app.get('/api/works', async (req, res) => {
         }
 
         const works = await Work.find(filter).populate('owner', 'fullName email').sort({ createdAt: -1 });
-        res.status(200).json(works); 
+        res.json(works); 
     } catch (error) {
-        res.status(500).json({ error: "Failed to fetch works" });
+        res.status(500).json({ error: "Search failed" });
     }
 });
 
-app.post('/api/works', verifyToken, upload.single('image'), async (req, res) => {
+app.post('/api/works', verifyToken, upload.single('image'), validateWorkInput, async (req, res) => {
     try {
-        // Only Employers should post projects according to Figma logic
-        if (req.user.role !== 'employer') {
-            return res.status(403).json({ error: "Only employers can post projects" });
-        }
+        if (req.user.role !== 'employer') return res.status(403).json({ error: "Only employers can post" });
 
-        const { title, description, category, price, location } = req.body;
         const newWork = new Work({
-            title, description, category, price, location,
+            ...req.body,
             imageUrl: req.file ? `/uploads/${req.file.filename}` : null,
             owner: req.user.id 
         });
-        const savedWork = await newWork.save();
-        res.status(201).json(savedWork);
-    } catch (err) { 
-        res.status(500).json({ error: err.message }); 
-    }
+        await newWork.save();
+        res.status(201).json(newWork);
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/** * BIDDING SYSTEM ROUTES (New: For Figma "Apply Now" button)
+/** * USER PROFILE 
  */
+app.get('/api/users/profile', verifyToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('-password');
+        res.json(user);
+    } catch (err) { res.status(500).json({ error: "Profile fetch failed" }); }
+});
 
-// @route   POST /api/bids
-// @desc    Freelancer applies for a project
+app.put('/api/users/profile', verifyToken, async (req, res) => {
+    try {
+        const updatedUser = await User.findByIdAndUpdate(req.user.id, req.body, { new: true }).select('-password');
+        res.json(updatedUser);
+    } catch (err) { res.status(500).json({ error: "Update failed" }); }
+});
+
+/** * BIDDING SYSTEM 
+ */
 app.post('/api/bids', verifyToken, async (req, res) => {
     try {
-        if (req.user.role !== 'freelancer') {
-            return res.status(403).json({ error: "Only freelancers can apply for work" });
-        }
-
-        const { workId, bidAmount, message } = req.body;
-        const newBid = new Bid({
-            workId,
-            freelancerId: req.user.id,
-            bidAmount,
-            message
-        });
-
+        if (req.user.role !== 'freelancer') return res.status(403).json({ error: "Only freelancers apply" });
+        const newBid = new Bid({ ...req.body, freelancerId: req.user.id });
         await newBid.save();
-        res.status(201).json({ message: "Application sent successfully!" });
-    } catch (err) {
-        res.status(500).json({ error: "Failed to send bid" });
-    }
+        res.status(201).json({ message: "Bid sent!" });
+    } catch (err) { res.status(500).json({ error: "Bidding failed" }); }
 });
 
-/** * STATS ROUTE (Updated for Figma "500+ Freelancers" display)
+// For Freelancers to see where they applied
+app.get('/api/bids/my-applications', verifyToken, async (req, res) => {
+    try {
+        const bids = await Bid.find({ freelancerId: req.user.id }).populate('workId').sort({ createdAt: -1 });
+        res.json(bids);
+    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+});
+
+// For Employers to see who applied to their works
+app.get('/api/bids/incoming', verifyToken, async (req, res) => {
+    try {
+        const myWorks = await Work.find({ owner: req.user.id });
+        const bids = await Bid.find({ workId: { $in: myWorks.map(w => w._id) } })
+            .populate('workId freelancerId', 'title fullName email');
+        res.json(bids);
+    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+});
+
+app.patch('/api/bids/:bidId/status', verifyToken, async (req, res) => {
+    try {
+        const updatedBid = await Bid.findByIdAndUpdate(req.params.bidId, { status: req.body.status }, { new: true });
+        res.json(updatedBid);
+    } catch (err) { res.status(500).json({ error: "Update failed" }); }
+});
+
+/** * ANALYTICS & STATS 
  */
 app.get('/api/stats', async (req, res) => {
     try {
-        const freelancerCount = await User.countDocuments({ role: 'freelancer' });
-        const totalWorks = await Work.countDocuments();
-        res.json({ 
-            freelancers: freelancerCount, 
-            worksPosted: totalWorks 
-        });
-    } catch (err) { 
-        res.status(500).json({ error: "Failed to fetch stats" }); 
-    }
+        const freelancers = await User.countDocuments({ role: 'freelancer' });
+        const works = await Work.countDocuments();
+        res.json({ freelancers, works });
+    } catch (err) { res.status(500).json({ error: "Stats failed" }); }
 });
 
-// --- 7. Start Server ---
-app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+// Global Error Handler
+app.use((err, req, res, next) => {
+    res.status(500).json({ error: "Internal Server Error", details: err.message });
+});
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
