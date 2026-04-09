@@ -1,0 +1,19 @@
+// src/data/algeria_cities.json
+[
+  {
+    "id": "16",
+    "name": "Alger",
+    "communes": ["Alger Centre", "Sidi M'Hamed", "El Madania", "Bab El Oued", "Kouba"]
+  },
+  {
+    "id": "31",
+    "name": "Oran",
+    "communes": ["Oran", "Arzew", "Bettioua", "Es Senia", "Gdyel"]
+  },
+  {
+    "id": "25",
+    "name": "Constantine",
+    "communes": ["Constantine", "El Khroub", "Hamma Bouziane", "Zighoud Youcef"]
+  }
+]
+// Note: This is an abbreviated file just to test functionality. In real app, all 58 wilayas and communes should be here.
